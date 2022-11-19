@@ -15,7 +15,18 @@ from data import get_split_dataset
 from render import NeRFRenderer
 from model import make_model
 from scipy.interpolate import CubicSpline
-import tqdm
+from tqdm import tqdm
+
+
+def move_camera_pose(pose, progress):
+    # control the camera move (spiral pose)
+    new_pose = pose.clone()
+    t = progress * np.pi * 4
+    radii = 0.05
+    # radii = 0
+    center = np.array([np.cos(t), -np.sin(t), -np.sin(0.5 * t)]) * radii
+    new_pose[:3, 3] += new_pose[:3, :3] @ center
+    return new_pose
 
 
 def extra_args(parser):
@@ -56,7 +67,7 @@ def extra_args(parser):
         default=0.0,
         help="Distance of camera from origin, default is average of z_far, z_near of dataset (only for non-DTU)",
     )
-    parser.add_argument("--fps", type=int, default=30, help="FPS of video")
+    parser.add_argument("--fps", type=int, default=15, help="FPS of video")
     return parser
 
 
@@ -115,62 +126,75 @@ z_far = dset.z_far
 
 print("Generating rays")
 
-dtu_format = hasattr(dset, "sub_format") and dset.sub_format == "dtu"
+# dtu_format = hasattr(dset, "sub_format") and dset.sub_format == "dtu"
 
-if dtu_format:
-    print("Using DTU camera trajectory")
-    # Use hard-coded pose interpolation from IDR for DTU
+# if dtu_format:
+#     print("Using DTU camera trajectory")
+#     # Use hard-coded pose interpolation from IDR for DTU
 
-    t_in = np.array([0, 2, 3, 5, 6]).astype(np.float32)
-    pose_quat = torch.tensor(
-        [
-            [0.9698, 0.2121, 0.1203, -0.0039],
-            [0.7020, 0.1578, 0.4525, 0.5268],
-            [0.6766, 0.3176, 0.5179, 0.4161],
-            [0.9085, 0.4020, 0.1139, -0.0025],
-            [0.9698, 0.2121, 0.1203, -0.0039],
-        ]
-    )
-    n_inter = args.num_views // 5
-    args.num_views = n_inter * 5
-    t_out = np.linspace(t_in[0], t_in[-1], n_inter * int(t_in[-1])).astype(np.float32)
-    scales = np.array([2.0, 2.0, 2.0, 2.0, 2.0]).astype(np.float32)
+#     t_in = np.array([0, 2, 3, 5, 6]).astype(np.float32)
+#     pose_quat = torch.tensor(
+#         [
+#             [0.9698, 0.2121, 0.1203, -0.0039],
+#             [0.7020, 0.1578, 0.4525, 0.5268],
+#             [0.6766, 0.3176, 0.5179, 0.4161],
+#             [0.9085, 0.4020, 0.1139, -0.0025],
+#             [0.9698, 0.2121, 0.1203, -0.0039],
+#         ]
+#     )
+#     n_inter = args.num_views // 5
+#     args.num_views = n_inter * 5
+#     t_out = np.linspace(t_in[0], t_in[-1], n_inter * int(t_in[-1])).astype(np.float32)
+#     scales = np.array([2.0, 2.0, 2.0, 2.0, 2.0]).astype(np.float32)
 
-    s_new = CubicSpline(t_in, scales, bc_type="periodic")
-    s_new = s_new(t_out)
+#     s_new = CubicSpline(t_in, scales, bc_type="periodic")
+#     s_new = s_new(t_out)
 
-    q_new = CubicSpline(t_in, pose_quat.detach().cpu().numpy(), bc_type="periodic")
-    q_new = q_new(t_out)
-    q_new = q_new / np.linalg.norm(q_new, 2, 1)[:, None]
-    q_new = torch.from_numpy(q_new).float()
+#     q_new = CubicSpline(t_in, pose_quat.detach().cpu().numpy(), bc_type="periodic")
+#     q_new = q_new(t_out)
+#     q_new = q_new / np.linalg.norm(q_new, 2, 1)[:, None]
+#     q_new = torch.from_numpy(q_new).float()
 
-    render_poses = []
-    for i, (new_q, scale) in enumerate(zip(q_new, s_new)):
-        new_q = new_q.unsqueeze(0)
-        R = util.quat_to_rot(new_q)
-        t = R[:, :, 2] * scale
-        new_pose = torch.eye(4, dtype=torch.float32).unsqueeze(0)
-        new_pose[:, :3, :3] = R
-        new_pose[:, :3, 3] = t
-        render_poses.append(new_pose)
-    render_poses = torch.cat(render_poses, dim=0)
-else:
-    print("Using default (360 loop) camera trajectory")
-    if args.radius == 0.0:
-        radius = (z_near + z_far) * 0.5
-        print("> Using default camera radius", radius)
-    else:
-        radius = args.radius
+#     render_poses = []
+#     for i, (new_q, scale) in enumerate(zip(q_new, s_new)):
+#         new_q = new_q.unsqueeze(0)
+#         R = util.quat_to_rot(new_q)
+#         t = R[:, :, 2] * scale
+#         new_pose = torch.eye(4, dtype=torch.float32).unsqueeze(0)
+#         new_pose[:, :3, :3] = R
+#         new_pose[:, :3, 3] = t
+#         render_poses.append(new_pose)
+#     render_poses = torch.cat(render_poses, dim=0)
+# else:
+#     print("Using default (360 loop) camera trajectory")
+#     if args.radius == 0.0:
+#         radius = (z_near + z_far) * 0.5
+#         print("> Using default camera radius", radius)
+#     else:
+#         radius = args.radius
 
-    # Use 360 pose sequence from NeRF
-    render_poses = torch.stack(
-        [
-            util.pose_spherical(angle, args.elevation, radius)
-            for angle in np.linspace(-180, 180, args.num_views + 1)[:-1]
-        ],
-        0,
-    )  # (NV, 4, 4)
+#     # Use 360 pose sequence from NeRF
+#     render_poses = torch.stack(
+#         [
+#             util.pose_spherical(angle, args.elevation, radius)
+#             for angle in np.linspace(-180, 180, args.num_views + 1)[:-1]
+#         ],
+#         0,
+#     )  # (NV, 4, 4)
 
+# c2w = poses[0]
+render_poses = []
+poses_copy = poses.detach().clone()
+for frame in tqdm(range(50)):
+    t = frame / 50
+    print("move_camera_pose(c2w, t)", move_camera_pose(poses_copy[0], t).shape)
+    print("c2w", poses_copy[0])
+    new_pose = move_camera_pose(poses_copy[0], t)
+    print("new_pose", new_pose)
+    render_poses.append(new_pose.unsqueeze(0))
+
+render_poses = torch.cat(render_poses, dim=0)
+print("render_poses", render_poses.shape)
 render_rays = util.gen_rays(
     render_poses,
     W,
@@ -186,6 +210,7 @@ focal = focal.to(device=device)
 
 source = torch.tensor(list(map(int, args.source.split())), dtype=torch.long)
 NS = len(source)
+print("NS", NS)
 random_source = NS == 1 and source[0] == -1
 assert not (source >= NV).any()
 
@@ -210,7 +235,7 @@ with torch.no_grad():
 
     print("Rendering", args.num_views * H * W, "rays")
     all_rgb_fine = []
-    for rays in tqdm.tqdm(
+    for rays in tqdm(
         torch.split(render_rays.view(-1, 8), args.ray_batch_size, dim=0)
     ):
         rgb, _depth = render_par(rays[None])

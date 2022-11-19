@@ -89,7 +89,7 @@ def extra_args(parser):
 
 
 args, conf = util.args.parse_args(
-    extra_args, default_conf="conf/resnet_fine_mv.conf", default_expname="shapenet",
+    extra_args, default_conf="conf/exp/srn.conf", default_expname="shapenet",
 )
 args.resume = True
 
@@ -101,6 +101,8 @@ dset = get_split_dataset(
 data_loader = torch.utils.data.DataLoader(
     dset, batch_size=1, shuffle=False, num_workers=8, pin_memory=False
 )
+
+print(len(data_loader))
 
 output_dir = args.output.strip()
 has_output = len(output_dir) > 0
@@ -164,6 +166,8 @@ if use_source_lut:
 else:
     source = torch.tensor(sorted(list(map(int, args.source.split()))), dtype=torch.long)
 
+print("source", source)
+
 NV = dset[0]["images"].shape[0]
 
 if args.eval_view_list is not None:
@@ -201,6 +205,10 @@ with torch.no_grad():
             print("(skip)")
             continue
         images = data["images"][0]  # (NV, 3, H, W)
+        masks = data["masks"][0]  # (NV, 3, H, W)
+
+        print("images", images.shape)
+        print("masks", masks.shape)
 
         NV, _, H, W = images.shape
 
@@ -311,12 +319,21 @@ with torch.no_grad():
 
         curr_ssim = 0.0
         curr_psnr = 0.0
+
+        curr_psnr_obj = 0.0
+        curr_ssim_obj = 0.0
+
+
         if not args.no_compare_gt:
             images_0to1 = images * 0.5 + 0.5  # (NV, 3, H, W)
             images_gt = images_0to1[target_view_mask]
+            masks_gt = masks[target_view_mask]
             rgb_gt_all = (
                 images_gt.permute(0, 2, 3, 1).contiguous().numpy()
             )  # (NV-NS, H, W, 3)
+            masks_gt_all = (masks_gt.permute(0, 2, 3, 1).contiguous().numpy()
+            )
+            print("rgb_gt_all, masks_gt_all", rgb_gt_all.shape, masks_gt_all.shape)
             for view_idx in range(n_gen_views):
                 ssim = skimage.measure.compare_ssim(
                     all_rgb[view_idx],

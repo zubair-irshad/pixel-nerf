@@ -8,6 +8,7 @@ sys.path.insert(
     0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "src"))
 )
 
+import torchvision.transforms as T
 import warnings
 import trainlib
 from model import make_model, loss
@@ -18,7 +19,7 @@ import numpy as np
 import torch.nn.functional as F
 import torch
 from dotmap import DotMap
-
+from torchvision.utils import make_grid
 
 def extra_args(parser):
     parser.add_argument(
@@ -76,6 +77,20 @@ render_par = renderer.bind_parallel(net, args.gpu_id).eval()
 
 nviews = list(map(int, args.nviews.split()))
 
+print("nviews", nviews)
+
+NV = 50
+curr_nviews = nviews[torch.randint(0, len(nviews), (1,)).item()]
+print("curr_nviews", curr_nviews)
+views_src = np.sort(np.random.choice(NV, curr_nviews, replace=False))
+print("views_src", views_src)
+view_dest = np.random.randint(0, NV - curr_nviews)
+print("view_dest", view_dest)
+for vs in range(curr_nviews):
+    view_dest += view_dest >= views_src[vs]
+    print("view_dest", view_dest)
+views_src = torch.from_numpy(views_src)
+
 
 class PixelNeRFTrainer(trainlib.Trainer):
     def __init__(self):
@@ -120,11 +135,14 @@ class PixelNeRFTrainer(trainlib.Trainer):
         all_images = data["images"].to(device=device)  # (SB, NV, 3, H, W)
 
         SB, NV, _, H, W = all_images.shape
+        print("all_images", all_images.shape)
+        print("NV", NV)
         all_poses = data["poses"].to(device=device)  # (SB, NV, 4, 4)
         all_bboxes = data.get("bbox")  # (SB, NV, 4)  cmin rmin cmax rmax
         all_focals = data["focal"]  # (SB)
         all_c = data.get("c")  # (SB)
-
+        print("all_focals", all_focals.shape)
+        print("all_c", all_c.shape)
         if self.use_bbox and global_step >= args.no_bbox_step:
             self.use_bbox = False
             print(">>> Stopped using bbox sampling @ iter", global_step)
@@ -146,9 +164,17 @@ class PixelNeRFTrainer(trainlib.Trainer):
             images = all_images[obj_idx]  # (NV, 3, H, W)
             poses = all_poses[obj_idx]  # (NV, 4, 4)
             focal = all_focals[obj_idx]
+
+            print("images", images.shape)
+            print("poses", poses.shape)
+            # focal = all_focals
+            # print("images", images.shape)
+            # print("poses", poses.shape)
+            # print("focal", focal)
             c = None
             if "c" in data:
                 c = data["c"][obj_idx]
+            # print("c", c)
             if curr_nviews > 1:
                 # Somewhat inefficient, don't know better way
                 image_ord[obj_idx] = torch.from_numpy(
@@ -157,13 +183,16 @@ class PixelNeRFTrainer(trainlib.Trainer):
             images_0to1 = images * 0.5 + 0.5
 
             cam_rays = util.gen_rays(
-                poses, W, H, focal, self.z_near, self.z_far, c=c
+                poses, W, H, focal, self.z_near, self.z_far, c
             )  # (NV, H, W, 8)
+
+            print("cam_rays", cam_rays.shape)
             rgb_gt_all = images_0to1
             rgb_gt_all = (
                 rgb_gt_all.permute(0, 2, 3, 1).contiguous().reshape(-1, 3)
             )  # (NV, H, W, 3)
 
+            print("rgb_gt_all", rgb_gt_all.shape)
             if all_bboxes is not None:
                 pix = util.bbox_sample(bboxes, args.ray_batch_size)
                 pix_inds = pix[..., 0] * H * W + pix[..., 1] * W + pix[..., 2]
@@ -175,12 +204,15 @@ class PixelNeRFTrainer(trainlib.Trainer):
                 device=device
             )  # (ray_batch_size, 8)
 
+            print("rays after sampling", rays.shape, rgb_gt.shape)
             all_rgb_gt.append(rgb_gt)
             all_rays.append(rays)
 
         all_rgb_gt = torch.stack(all_rgb_gt)  # (SB, ray_batch_size, 3)
         all_rays = torch.stack(all_rays)  # (SB, ray_batch_size, 8)
 
+        # print("all_images", all_images.shape)
+        # print("image_ord", image_ord.shape)
         image_ord = image_ord.to(device)
         src_images = util.batched_index_select_nd(
             all_images, image_ord
@@ -189,13 +221,20 @@ class PixelNeRFTrainer(trainlib.Trainer):
 
         all_bboxes = all_poses = all_images = None
 
+        # print("src_images", src_images.shape)
+        # print("src_poses", src_poses.shape)
+        
+        print("src_images", src_images.shape)
+        print("all_focals", all_focals.shape)
+        print("all_c", all_c.shape)
+        print("src_poses", src_poses.shape)
         net.encode(
             src_images,
             src_poses,
             all_focals.to(device=device),
             c=all_c.to(device=device) if all_c is not None else None,
         )
-
+        print("all_rays after stack", all_rays.shape)
         render_dict = DotMap(render_par(all_rays, want_weights=True,))
         coarse = render_dict.coarse
         fine = render_dict.fine
@@ -237,12 +276,15 @@ class PixelNeRFTrainer(trainlib.Trainer):
         images = data["images"][batch_idx].to(device=device)  # (NV, 3, H, W)
         poses = data["poses"][batch_idx].to(device=device)  # (NV, 4, 4)
         focal = data["focal"][batch_idx : batch_idx + 1]  # (1)
+        # focal = data["focal"][batch_idx]  # (1)
+        # focal = data["focal"]  # (1)
         c = data.get("c")
         if c is not None:
             c = c[batch_idx : batch_idx + 1]  # (1)
+            # c = c[batch_idx]  # (1)
         NV, _, H, W = images.shape
         cam_rays = util.gen_rays(
-            poses, W, H, focal, self.z_near, self.z_far, c=c
+            poses, W, H, focal, self.z_near, self.z_far, c
         )  # (NV, H, W, 8)
         images_0to1 = images * 0.5 + 0.5  # (NV, 3, H, W)
 
@@ -264,6 +306,7 @@ class PixelNeRFTrainer(trainlib.Trainer):
         )
 
         gt = images_0to1[view_dest].permute(1, 2, 0).cpu().numpy().reshape(H, W, 3)
+        # print("gt", gt.shape)
         with torch.no_grad():
             test_rays = cam_rays[view_dest]  # (H, W, 8)
             test_images = images[views_src]  # (NS, 3, H, W)
@@ -297,16 +340,31 @@ class PixelNeRFTrainer(trainlib.Trainer):
         )
         alpha_coarse_cmap = util.cmap(alpha_coarse_np) / 255
         depth_coarse_cmap = util.cmap(depth_coarse_np) / 255
-        vis_list = [
-            *source_views,
-            gt,
-            depth_coarse_cmap,
-            rgb_coarse_np,
-            alpha_coarse_cmap,
-        ]
+        # print("T.ToTensor()(gt)", T.ToTensor()(gt).shape)
+        gt_psnr = gt
+        gt = (gt * 255).astype(np.uint8)
+        depth_coarse_cmap = (depth_coarse_cmap * 255).astype(np.uint8)
+        rgb_coarse_np = (rgb_coarse_np * 255).astype(np.uint8)
+        alpha_coarse_cmap = (alpha_coarse_cmap * 255).astype(np.uint8)
+        # print("source_views", *source_views.shape)
+        # print("T.ToTensor()(*source_views)", T.ToTensor()(source_views).shape)
+        # print("gt", torch.from_numpy(source_views).shape, T.ToTensor()(gt).unsqueeze(0).shape, T.ToTensor()(depth_coarse_cmap).unsqueeze(0).shape, T.ToTensor()(rgb_coarse_np).unsqueeze(0).shape, T.ToTensor()(alpha_coarse_cmap).unsqueeze(0).shape)
+        stack = torch.cat(
+            (torch.from_numpy(source_views).permute(0,3,1,2), T.ToTensor()(gt).unsqueeze(0), T.ToTensor()(depth_coarse_cmap).unsqueeze(0), T.ToTensor()(rgb_coarse_np).unsqueeze(0), T.ToTensor()(alpha_coarse_cmap).unsqueeze(0)), dim=0
+        )  # (6, 3, H, W)
+        grid = make_grid(stack, nrow=3)
+        vis = T.ToPILImage()(grid)
 
-        vis_coarse = np.hstack(vis_list)
-        vis = vis_coarse
+        # vis_list = [
+        #     *source_views,
+        #     gt,
+        #     depth_coarse_cmap,
+        #     rgb_coarse_np,
+        #     alpha_coarse_cmap,
+        # ]
+
+        # vis_coarse = np.hstack(vis_list)
+        # vis = vis_coarse
 
         if using_fine:
             print("f rgb min {} max {}".format(rgb_fine_np.min(), rgb_fine_np.max()))
@@ -325,13 +383,20 @@ class PixelNeRFTrainer(trainlib.Trainer):
                 alpha_fine_cmap,
             ]
 
-            vis_fine = np.hstack(vis_list)
-            vis = np.vstack((vis_coarse, vis_fine))
+            stack = torch.cat(
+                (torch.from_numpy(source_views).permute(0,3,1,2), T.ToTensor()(gt).unsqueeze(0), T.ToTensor()(depth_coarse_cmap).unsqueeze(0), T.ToTensor()(rgb_coarse_np).unsqueeze(0), T.ToTensor()(alpha_coarse_cmap).unsqueeze(0)), dim=0
+            )  # (6, 3, H, W)
+            grid = make_grid(stack, nrow=3)
+            vis = T.ToPILImage()(grid)
+
+            # vis_fine = np.hstack(vis_list)
+            # vis = np.vstack((vis_coarse, vis_fine))
             rgb_psnr = rgb_fine_np
         else:
             rgb_psnr = rgb_coarse_np
 
-        psnr = util.psnr(rgb_psnr, gt)
+        # print("rgb psnr, gt", rgb_psnr, gt_psnr)
+        psnr = util.psnr(rgb_psnr, gt_psnr)
         vals = {"psnr": psnr}
         print("psnr", psnr)
 

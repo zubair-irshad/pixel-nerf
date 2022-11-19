@@ -4,6 +4,8 @@ import numpy as np
 from torch.utils.tensorboard import SummaryWriter
 import tqdm
 import warnings
+import wandb
+wandb.init()
 
 
 class Trainer:
@@ -17,14 +19,14 @@ class Trainer:
             train_dataset,
             batch_size=args.batch_size,
             shuffle=True,
-            num_workers=8,
+            num_workers=16,
             pin_memory=False,
         )
         self.test_data_loader = torch.utils.data.DataLoader(
             test_dataset,
             batch_size=min(args.batch_size, 16),
             shuffle=True,
-            num_workers=4,
+            num_workers=16,
             pin_memory=False,
         )
 
@@ -38,7 +40,7 @@ class Trainer:
         self.num_epochs = args.epochs
         self.accu_grad = conf.get_int("accu_grad", 1)
         self.summary_path = os.path.join(args.logs_path, args.name)
-        self.writer = SummaryWriter(self.summary_path)
+        # self.writer = SummaryWriter(self.summary_path)
 
         self.fixed_test = hasattr(args, "fixed_test") and args.fixed_test
 
@@ -152,9 +154,11 @@ class Trainer:
 
         progress = tqdm.tqdm(bar_format="[{rate_fmt}] ")
         for epoch in range(self.num_epochs):
-            self.writer.add_scalar(
-                "lr", self.optim.param_groups[0]["lr"], global_step=step_id
-            )
+            wandb.log({'lr': self.optim.param_groups[0]["lr"]})
+            wandb.log({'epoch': epoch})
+            # self.writer.add_scalar(
+            #     "lr", self.optim.param_groups[0]["lr"], global_step=step_id
+            # )
 
             batch = 0
             for _ in range(self.num_epoch_repeats):
@@ -179,10 +183,12 @@ class Trainer:
                             test_losses = self.eval_step(test_data, global_step=step_id)
                         self.net.train()
                         test_loss_str = fmt_loss_str(test_losses)
-                        self.writer.add_scalars("train", losses, global_step=step_id)
-                        self.writer.add_scalars(
-                            "test", test_losses, global_step=step_id
-                        )
+                        wandb.log({'train': losses})
+                        wandb.log({'test': test_losses})
+                        # self.writer.add_scalars("train", losses, global_step=step_id)
+                        # self.writer.add_scalars(
+                        #     "test", test_losses, global_step=step_id
+                        # )
                         print("*** Eval:", "E", epoch, "B", batch, test_loss_str, " lr")
 
                     if batch % self.save_interval == 0 and (epoch > 0 or batch > 0):
@@ -213,21 +219,27 @@ class Trainer:
                                 test_data, global_step=step_id
                             )
                         if vis_vals is not None:
-                            self.writer.add_scalars(
-                                "vis", vis_vals, global_step=step_id
-                            )
+                            wandb.log({'vis_vals': vis_vals})
+
+                            # self.writer.add_scalars(
+                            #     "vis", vis_vals, global_step=step_id
+                            # )
                         self.net.train()
                         if vis is not None:
-                            import imageio
+                            wandb.log({
+                            "val/GT_pred images": wandb.Image(vis)
+                            })
 
-                            vis_u8 = (vis * 255).astype(np.uint8)
-                            imageio.imwrite(
-                                os.path.join(
-                                    self.visual_path,
-                                    "{:04}_{:04}_vis.png".format(epoch, batch),
-                                ),
-                                vis_u8,
-                            )
+                            # import imageio
+
+                            # vis_u8 = (vis * 255).astype(np.uint8)
+                            # imageio.imwrite(
+                            #     os.path.join(
+                            #         self.visual_path,
+                            #         "{:04}_{:04}_vis.png".format(epoch, batch),
+                            #     ),
+                            #     vis_u8,
+                            # )
 
                     if (
                         batch == self.num_total_batches - 1

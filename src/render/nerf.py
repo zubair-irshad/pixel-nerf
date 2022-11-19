@@ -197,7 +197,7 @@ class NeRFRenderer(torch.nn.Module):
             else:
                 eval_batch_size = self.eval_batch_size
                 eval_batch_dim = 0
-
+            print("points", points.shape)
             split_points = torch.split(points, eval_batch_size, dim=eval_batch_dim)
             if use_viewdirs:
                 dim1 = K
@@ -268,9 +268,13 @@ class NeRFRenderer(torch.nn.Module):
 
             assert len(rays.shape) == 3
             superbatch_size = rays.shape[0]
+            
+            print("rays", rays.shape)
             rays = rays.reshape(-1, 8)  # (SB * B, 8)
 
+            print("rays", rays.shape)
             z_coarse = self.sample_coarse(rays)  # (B, Kc)
+            print("zcoards", z_coarse.shape)
             coarse_composite = self.composite(
                 model, rays, z_coarse, coarse=True, sb=superbatch_size,
             )

@@ -235,6 +235,49 @@ def bbox_sample(bboxes, num_pix):
     return pix
 
 
+def gen_rays_objectron(poses, width, height, all_focal, z_near, z_far, all_c=None, ndc=False):
+    """
+    Generate camera rays
+    :return (B, H, W, 8)
+    """
+    num_images = poses.shape[0]
+    device = poses.device
+
+    cam_unproj_map = []
+    for focal, c in zip(all_focal, all_c):
+        unproj = unproj_map(width, height, focal.squeeze(), c=c, device=device)
+        cam_unproj_map.append(unproj.unsqueeze(0))
+        # print(unproj.shape)
+    cam_unproj_map = torch.cat(cam_unproj_map, dim=0)
+    print("cam_unproj_map", cam_unproj_map.shape)
+    cam_centers = poses[:, None, None, :3, 3].expand(-1, height, width, -1)
+    cam_raydir = torch.matmul(
+        poses[:, None, None, :3, :3], cam_unproj_map.unsqueeze(-1)
+    )[:, :, :, :, 0]
+    if ndc:
+        if not (z_near == 0 and z_far == 1):
+            warnings.warn(
+                "dataset z near and z_far not compatible with NDC, setting them to 0, 1 NOW"
+            )
+        z_near, z_far = 0.0, 1.0
+        cam_centers, cam_raydir = ndc_rays(
+            width, height, focal, 1.0, cam_centers, cam_raydir
+        )
+
+    cam_nears = (
+        torch.tensor(z_near, device=device)
+        .view(1, 1, 1, 1)
+        .expand(num_images, height, width, -1)
+    )
+    cam_fars = (
+        torch.tensor(z_far, device=device)
+        .view(1, 1, 1, 1)
+        .expand(num_images, height, width, -1)
+    )
+    return torch.cat(
+        (cam_centers, cam_raydir, cam_nears, cam_fars), dim=-1
+    )  # (B, H, W, 8)
+
 def gen_rays(poses, width, height, focal, z_near, z_far, c=None, ndc=False):
     """
     Generate camera rays
@@ -461,13 +504,16 @@ def same_unpad_deconv2d(t, kernel_size=3, stride=1, layer=None):
 def combine_interleaved(t, inner_dims=(1,), agg_type="average"):
     if len(inner_dims) == 1 and inner_dims[0] == 1:
         return t
+    print("inner dimns", inner_dims)
     t = t.reshape(-1, *inner_dims, *t.shape[1:])
+    print("t", t.shape)
     if agg_type == "average":
         t = torch.mean(t, dim=1)
     elif agg_type == "max":
         t = torch.max(t, dim=1)[0]
     else:
         raise NotImplementedError("Unsupported combine type " + agg_type)
+    print("t after mean", t.shape)
     return t
 
 
@@ -476,8 +522,8 @@ def psnr(pred, target):
     Compute PSNR of two tensors in decibels.
     pred/target should be of same size or broadcastable
     """
-    mse = ((pred - target) ** 2).mean()
-    psnr = -10 * math.log10(mse)
+    mse = np.mean(((pred - target)** 2))
+    psnr = -10*np.log10(mse)
     return psnr
 
 

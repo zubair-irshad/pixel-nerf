@@ -98,6 +98,8 @@ class SpatialEncoder(nn.Module):
                     scale = self.latent_scaling / image_size
                     uv = uv * scale - 1.0
 
+            print("uv", uv.shape)
+            print("self.latent", self.latent.shape)
             uv = uv.unsqueeze(2)  # (B, N, 1, 2)
             samples = F.grid_sample(
                 self.latent,

@@ -21,6 +21,7 @@ class SRNDataset(torch.utils.data.Dataset):
         :param world_scale amount to scale entire world by
         """
         super().__init__()
+        print("path", path)
         self.base_path = path + "_" + stage
         self.dataset_name = os.path.basename(path)
 

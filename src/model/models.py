@@ -156,13 +156,15 @@ class PixelNeRFNet(torch.nn.Module):
         with profiler.record_function("model_inference"):
             SB, B, _ = xyz.shape
             NS = self.num_views_per_obj
-
+            print("xyz", xyz.shape)
             # Transform query points into the camera spaces of the input views
             xyz = repeat_interleave(xyz, NS)  # (SB*NS, B, 3)
+            print("xyz after repeat", xyz.shape)
             xyz_rot = torch.matmul(self.poses[:, None, :3, :3], xyz.unsqueeze(-1))[
                 ..., 0
             ]
             xyz = xyz_rot + self.poses[:, None, :3, 3]
+            print("xyz", xyz.shape)
 
             if self.d_in > 0:
                 # * Encode the xyz coordinates
@@ -181,16 +183,20 @@ class PixelNeRFNet(torch.nn.Module):
                     # Positional encoding (no viewdirs)
                     z_feature = self.code(z_feature)
 
+                print("viewdirs", viewdirs.shape)
                 if self.use_viewdirs:
                     # * Encode the view directions
                     assert viewdirs is not None
                     # Viewdirs to input view space
                     viewdirs = viewdirs.reshape(SB, B, 3, 1)
                     viewdirs = repeat_interleave(viewdirs, NS)  # (SB*NS, B, 3, 1)
+                    print("view dirs source views", viewdirs.shape)
                     viewdirs = torch.matmul(
                         self.poses[:, None, :3, :3], viewdirs
                     )  # (SB*NS, B, 3, 1)
+                    print("viewdirs", viewdirs.shape)
                     viewdirs = viewdirs.reshape(-1, 3)  # (SB*B, 3)
+                    print("viewdirs", viewdirs.shape)
                     z_feature = torch.cat(
                         (z_feature, viewdirs), dim=1
                     )  # (SB*B, 4 or 6)
@@ -204,21 +210,27 @@ class PixelNeRFNet(torch.nn.Module):
             if self.use_encoder:
                 # Grab encoder's latent code.
                 uv = -xyz[:, :, :2] / xyz[:, :, 2:]  # (SB, B, 2)
+                print("self.focal", self.focal.shape, self.c.shape)
                 uv *= repeat_interleave(
                     self.focal.unsqueeze(1), NS if self.focal.shape[0] > 1 else 1
                 )
                 uv += repeat_interleave(
                     self.c.unsqueeze(1), NS if self.c.shape[0] > 1 else 1
                 )  # (SB*NS, B, 2)
+                print("image_shape", self.image_shape)
+                print("uv input", uv.shape)
                 latent = self.encoder.index(
                     uv, None, self.image_shape
                 )  # (SB * NS, latent, B)
 
+                print("latent output", latent.shape)
                 if self.stop_encoder_grad:
                     latent = latent.detach()
                 latent = latent.transpose(1, 2).reshape(
                     -1, self.latent_size
                 )  # (SB * NS * B, latent)
+                print("latent", latent.shape)
+                print("z feature", z_feature.shape)
 
                 if self.d_in == 0:
                     # z_feature not needed
@@ -226,6 +238,7 @@ class PixelNeRFNet(torch.nn.Module):
                 else:
                     mlp_input = torch.cat((latent, z_feature), dim=-1)
 
+                print("mlp_input", mlp_input.shape)
             if self.use_global_encoder:
                 # Concat global latent code if enabled
                 global_latent = self.global_encoder.latent
@@ -254,9 +267,11 @@ class PixelNeRFNet(torch.nn.Module):
                     dim_size=dim_size,
                 )
 
+            print("mlp_output", mlp_output.shape)
             # Interpret the output
             mlp_output = mlp_output.reshape(-1, B, self.d_out)
 
+            print("mlp_output", mlp_output.shape)
             rgb = mlp_output[..., :3]
             sigma = mlp_output[..., 3:4]
 

@@ -106,6 +106,7 @@ class ResnetFC(nn.Module):
         self.blocks = nn.ModuleList(
             [ResnetBlockFC(d_hidden, beta=beta) for i in range(n_blocks)]
         )
+        print("d_latent", d_latent)
 
         if d_latent != 0:
             n_lin_z = min(combine_layer, n_blocks)
@@ -148,7 +149,11 @@ class ResnetFC(nn.Module):
             else:
                 x = torch.zeros(self.d_hidden, device=zx.device)
 
+            print("x", x.shape)
+            print("self.combine_layer", self.combine_layer)
+            print("n blocks", self.n_blocks)
             for blkid in range(self.n_blocks):
+
                 if blkid == self.combine_layer:
                     # The following implements camera frustum culling, requires torch_scatter
                     #  if combine_index is not None:
@@ -167,9 +172,11 @@ class ResnetFC(nn.Module):
                     #          reduce=combine_type,
                     #      )
                     #  else:
+                    print("x before combine", x.shape)
                     x = util.combine_interleaved(
                         x, combine_inner_dims, self.combine_type
                     )
+                    print("x after", x.shape)
 
                 if self.d_latent > 0 and blkid < self.combine_layer:
                     tz = self.lin_z[blkid](z)
